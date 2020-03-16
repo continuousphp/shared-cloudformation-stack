@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Elasticsearch"
+
+Parameters:
+  ServiceName:
+    Description: "Service Name"
+    Type: String
+  Vpc:
+    Description: "VPC identifier."
+    Type: String
+  Subnets:
+    Description: "VPC Private Subnet list"
+    Type: List<AWS::EC2::Subnet::Id>
+  InstanceClass:
+    Description: "Elasticsearch Instance Class"
+    Type: String
+    AllowedValues:
+      - t2.small.elasticsearch
+      - t2.medium.elasticsearch
+      - r4.large.elasticsearch
+      - r4.xlarge.elasticsearch
+      - r4.2xlarge.elasticsearch
+      - r4.4xlarge.elasticsearch
+      - r4.8xlarge.elasticsearch
+      - r4.16xlarge.elasticsearch
+  MasterDesiredCapacity:
+    Description: "Number of Elasticsearch Master nodes"
+    Type: Number
+  DesiredCapacity:
+    Description: "Number of Elasticsearch Instances"
+    Type: Number
+  Version:
+    Description: "ElasticSearch Version"
+    Type: Number
+    Default: 6.2
+  GlobalCertificateArn:
+    Description: Global Certificate ARN
+    Type: String
+  BaseDomain:
+    Description: Based domain of application
+    Type: String
+  ElkCognitoDomain:
+    Description: Kibana Cognito login Domain
+    Type: String
+  PythonBoto3LayerArn:
+    Description: PythonBoto3Layer Arn
+    Type: String
+  RolesArn:
+    Description: List of IAM Role ARN authorized to call the ES Index
+    Type: String
+
+Conditions:
+  crossAZ: !Not [ !Or [ !Equals [ !Ref DesiredCapacity, 1 ], !Equals [ !Ref DesiredCapacity, 0 ] ] ]
+  isDedicatedMasterEnabled: !Not [ !Equals [ !Ref MasterDesiredCapacity, 0 ] ]
+
+Resources:
+  UserPoolCognito:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: ELK
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: email
+          Required: True
+
+  IdentityRoleCognito:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+      Policies:
+        - PolicyName: ElkCognitoUserPermission
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - mobileanalytics:PutEvents
+                  - cognito-sync:*
+                  - cognito-identity:*
+                Resource: "*"
+
+  IdentityRoleCognitoUnAuth:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+      Policies:
+        - PolicyName: ElkCognitoUserPermissionUnAuth
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - mobileanalytics:PutEvents
+                  - cognito-sync:*
+                Resource: "*"
+
+  IdentityPoolCognito:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: True
+
+  IdentityPoolCognitoAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPoolCognito
+      Roles:
+        authenticated: !GetAtt IdentityRoleCognito.Arn
+        unauthenticated: !GetAtt IdentityRoleCognitoUnAuth.Arn
+
+  ElasticsearchDomain:
+    Type: AWS::Elasticsearch::Domain
+    DependsOn:
+      - IdentityPoolCognitoAttachment
+    Properties:
+      DomainName: !Ref ServiceName
+      ElasticsearchVersion: !Ref Version
+      EBSOptions:
+        EBSEnabled: True
+        Iops: 0
+        VolumeSize: 10
+        VolumeType: gp2
+      ElasticsearchClusterConfig:
+        InstanceCount: !Ref DesiredCapacity
+        InstanceType: !Ref InstanceClass
+        ZoneAwarenessEnabled: !If [ crossAZ, True, False ]
+        DedicatedMasterEnabled: !If [ isDedicatedMasterEnabled, True, False ]
+        DedicatedMasterCount: !If [ isDedicatedMasterEnabled, !Ref MasterDesiredCapacity, !Ref "AWS::NoValue" ]
+        DedicatedMasterType: !If [ isDedicatedMasterEnabled, !Ref InstanceClass, !Ref "AWS::NoValue" ]
+      SnapshotOptions:
+        AutomatedSnapshotStartHour: 2
+      AdvancedOptions:
+        rest.action.multi.allow_explicit_index: True
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Split [ ",", !Join [ ",", [ !Ref RolesArn,  !GetAtt IdentityRoleCognito.Arn] ] ]
+            Action: es:*
+            Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${ServiceName}/*"
+
+  ESCognitoRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonESCognitoAccess
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: es.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  CognitoDomainConfigLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ESCognitoLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - es:UpdateElasticsearchDomainConfig
+                  - cognito-idp:CreateUserPoolDomain
+                  - cognito-idp:DescribeUserPoolDomain
+                  - cognito-idp:DeleteUserPoolDomain
+                  - cloudfront:UpdateDistribution
+                  - iam:PassRole
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  CognitoDomainConfigLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda for configuring cognito domain on ElasticSearch. Not currently available with Cloudformation.
+      Runtime: python2.7
+      Code: ../../lambda/_esEnableCognitoDomain
+      Handler: main.handler
+      Timeout: 300
+      Role: !GetAtt CognitoDomainConfigLambdaRole.Arn
+      Layers:
+        - !Ref PythonBoto3LayerArn
+
+  EnableESCognitoLambda:
+    DependsOn:
+      - CognitoDomainConfigLambda
+      - ElasticsearchDomain
+      - UserPoolCognito
+    Type: Custom::EnableESCognito
+    Properties:
+      ServiceToken: !GetAtt CognitoDomainConfigLambda.Arn
+      CognitoUserPoolId: !Ref UserPoolCognito
+      CognitoIdentityPoolId: !Ref IdentityPoolCognito
+      ESDomain: !Ref ElasticsearchDomain
+      ESRoleArn: !GetAtt ESCognitoRole.Arn
+      ElkCognitoDomain: !Ref ElkCognitoDomain
+      ElkCognitoAcm: !Ref GlobalCertificateArn
+
+  CognitoRecordSet:
+    DependsOn: EnableESCognitoLambda
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${BaseDomain}."
+      Name: !Sub "${ElkCognitoDomain}."
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt EnableESCognitoLambda.cloudFrontDomain
+
+Outputs:
+  DomainArn:
+    Description: Elasticsearch Domain ARN
+    Value: !GetAtt ElasticsearchDomain.DomainArn
+  DomainEndpoint:
+    Description: Elasticsearch Domain Endpoint
+    Value: !GetAtt ElasticsearchDomain.DomainEndpoint
+  ElasticSearchVersion:
+    Description: ElasticSearch Version
+    Value: !Ref Version
