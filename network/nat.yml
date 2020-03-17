@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Nat Gateway
+
+Parameters:
+  Vpc:
+    Description: "VPC identifier."
+    Type: String
+  PublicSubnetId:
+    Description: Vpc Public Subnet Id
+    Type: String
+  PrivateRouteTable:
+    Description: Private route table Id
+    Type: String
+
+Resources:
+  NatEip:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: !Ref Vpc
+
+  Nat:
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      SubnetId: !Ref PublicSubnetId
+      AllocationId: !GetAtt NatEip.AllocationId
+
+  NatRoute:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref Nat
