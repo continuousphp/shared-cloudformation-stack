@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Transform: AWS::Serverless-2016-10-31
-Description: Cloudformation Killer - Schedule stacks termination
+Description: Cloudformation Killer - On demand stacks termination
 Parameters:
   CloudFormationRoleArn:
     Description: The Role ARN of Cloudformation Role
