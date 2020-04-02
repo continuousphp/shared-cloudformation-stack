@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Cloudformation Killer - Schedule stacks termination
+Parameters:
+  CloudFormationRoleArn:
+    Description: The Role ARN of Cloudformation Role
+    Type: String
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: Lambda-Cf-Killer-Permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+              - Effect: Allow
+                Action:
+                  - cloudformation:ListStacks
+                  - cloudformation:ListStackResources
+                  - cloudformation:DeleteStack
+                  - s3:List*
+                  - s3:DeleteObjectTagging
+                  - s3:DeleteObjectVersion
+                  - s3:DeleteObjectVersion
+                  - s3:DeleteObject
+                  - s3:DeleteBucketPolicy
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Ref CloudFormationRoleArn
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+        import json
+        import boto3
+        import re
+        import time
+        import os
+        from datetime import datetime, timedelta
+        s3 = boto3.resource('s3')
+        clientS3 = boto3.client('s3')
+        clientCloudformation = boto3.client('cloudformation')
+        def handler(event, context):
+            regStackName = re.compile('^' + event["stackName"] + '([-\w]*)$')
+            paginator = clientCloudformation.get_paginator('list_stacks')
+            resources = clientCloudformation.get_paginator('list_stack_resources')
+            response_iterator = paginator.paginate(
+                StackStatusFilter=['CREATE_COMPLETE', 'UPDATE_COMPLETE', 'ROLLBACK_COMPLETE', 'UPDATE_ROLLBACK_COMPLETE', 'DELETE_FAILED']
+            )
+            stacksName = []
+            for page in response_iterator:
+                for stack in page['StackSummaries']:
+                    if regStackName.match(stack['StackName']):
+                        if stack['StackName'] not in stacksName:
+                          stacksName.append(stack['StackName'])
+                    else:
+                        print("Ignore Stack {} due to mismatch name".format(stack['StackName']))
+            for name in stacksName:
+                clientCloudformation.delete_stack(
+                    StackName=name,
+                    RoleARN=os.environ['CF_ROLE_ARN']
+                )
+                print("CloudFormation Stack {} has been terminated!".format(name))
+                resources_iterator = resources.paginate(StackName=name);
+                for page in resources_iterator:
+                    for resource in page['StackResourceSummaries']:
+                      if resource["ResourceType"] == 'AWS::S3::Bucket' :
+                          print('Empty bucket : {}'.format(resource["PhysicalResourceId"]))
+                          bucket = s3.Bucket(resource["PhysicalResourceId"])
+                          bucket.objects.all().delete()
+            return "Finish"
+      Handler: index.handler
+      Runtime: python3.6
+      Timeout: 60
+      Description: Terminate Cloudformation Stack of Ephemeral Infrastructure As Code
+      Role: !Sub ${Role.Arn}
+      Environment:
+        Variables:
+          CF_ROLE_ARN: !Ref CloudFormationRoleArn
+          
+
+  UserFunction:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: lambda-invokator
+      Policies:
+        -
+          PolicyName: lambda-invoke
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt Function.Arn
+
+  UserFunctionAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      Status: Active
+      UserName: !Ref UserFunction
+
+
+Outputs:
+  FunctionName:
+    Description: 'lamdba function name'
+    Value: !Ref Function
+
+
+  UserFunctionAccessKey:
+    Description: 'Cloudformation User Access Key'
+    Value: !Ref UserFunctionAccessKey
+
+  UserFunctionSecretKey:
+    Description: 'Cloudformation User Secret Key'
+    Value: !GetAtt UserFunctionAccessKey.SecretAccessKey
