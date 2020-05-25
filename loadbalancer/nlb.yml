@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Network Load Balancer (NLB)
+
+Parameters:
+  AppName:
+    Description: Application name of env deployed
+    Type: String
+  Vpc:
+    Description: VPC identifier
+    Type: String
+  Subnets:
+    Description: Public Subnet list
+    Type: List<AWS::EC2::Subnet::Id>
+  CertificateArn:
+    Description: Amazon TLS Certificate ARN
+    Type: String
+  BaseDomain:
+    Description: Base domain for the app
+    Type: String
+
+Resources:
+  EipAz1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EipAz2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  EipAz3:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      Protocol: TCP
+      Port: 8080
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthyThresholdCount: 3
+      HealthCheckIntervalSeconds: 10
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 5
+
+  NLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: network
+      Scheme: internet-facing
+      SubnetMappings:
+        - AllocationId: !GetAtt EipAz1.AllocationId
+          SubnetId: !Select [0, !Ref Subnets]
+        - AllocationId: !GetAtt EipAz2.AllocationId
+          SubnetId: !Select [1, !Ref Subnets]
+        - AllocationId: !GetAtt EipAz3.AllocationId
+          SubnetId: !Select [2, !Ref Subnets]
+      LoadBalancerAttributes:
+        - Key: load_balancing.cross_zone.enabled
+          Value: true
+      Tags:
+        - Key: AppName
+          Value: !Ref AppName
+
+  NLBTlsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref NLB
+      Port: 443
+      Protocol: TLS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+
+Outputs:
+  TargetGroupArn:
+    Description: Target Group Arn
+    Value: !Ref TargetGroup
+
+  NlbPublicIp1:
+    Description: NLB Public Ip 1
+    Value: !Ref EipAz1
+
+  NlbPublicIp2:
+    Description: NLB Public Ip 2
+    Value: !Ref EipAz2
+
+  NlbPublicIp3:
+    Description: NLB Public Ip 3
+    Value: !Ref EipAz3
