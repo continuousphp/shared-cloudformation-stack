@@ -44,6 +44,7 @@ Resources:
       CidrBlock: !Sub "${CidrBlockPrefix}.${Range}0.0/24"
       VpcId: !Ref Vpc
       AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: network
           Value: public
