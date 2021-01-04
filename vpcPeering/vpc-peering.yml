@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Peering
+
+Parameters:
+  LocalVpcId:
+    Description: id vpc local.
+    Type: String 
+  IdPeerVpc:
+    Description: id vpc remote.
+    Type: String 
+  PeerOwnerId:
+    Description: vpc peer accounr id.
+    Type: String
+  PeerRoleArn:
+    Description: vpc peer accepter role arn.
+    Type: String
+  PeerRegion:
+    Description: vpc peer region code.
+    Type: String
+
+Resources:
+  VpcPeering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref LocalVpcId
+      PeerVpcId: !Ref IdPeerVpc
+      PeerOwnerId: !Ref PeerOwnerId
+      PeerRoleArn: !Ref PeerRoleArn
+      PeerRegion: !Ref PeerRegion
+      
+Outputs:
+  VpcPeeringId:
+    Description: VPC Peering ID
+    Value: !Ref VpcPeering
